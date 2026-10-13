@@ -1,0 +1,87 @@
+# PyPI 발행 컴포넌트 — /vdev-init 이 vdev-config.deploy 로 `.github/workflows/deploy-pypi.yml`
+# 에 **정적 복사**한다(치환 토큰 없음). 오케스트레이터 deploy.yml 이 uses: 로 호출한다.
+#
+# permissions 를 선언하지 않는다 — 호출된 재사용 워크플로는 호출 job 의 권한을 물려받고
+# 줄일 수만 있으므로, 양쪽에 적으면 어긋날 때 조용히 권한이 깎인다. 단일 출처는 caller job.
+#
+# ⚠ 알려진 제약(미해결): 재사용 워크플로(`on: workflow_call`)에서는 PyPI trusted
+# publishing(OIDC)이 동작하지 않는다. pypa/gh-action-pypi-publish README 원문:
+#   "Trusted publishing cannot be used from within a reusable workflow at this time.
+#    It is recommended to instead create a non-reusable workflow that contains a job
+#    calling your reusable workflow, and then do the trusted publishing step from a
+#    separate job within that non-reusable workflow. Alternatively, you can still use
+#    a username/token inside the reusable workflow."
+# 근본 원인은 PyPI(`warehouse`) 쪽이다 — OIDC 클레임 중 최상위 호출자를 가리키는
+# `workflow_ref` 대신, 가장 안쪽 재사용 워크플로를 가리키는 `job_workflow_ref` 로
+# 매칭한다(추적 이슈 `pypa/warehouse#11096`, 수정 PR `#20083` 은 이 컴포넌트 작성 시점
+# 기준 미병합). 이 컴포넌트는 언제나 `deploy.yml → deploy-pypi.yml` 재사용 워크플로
+# 체인으로만 호출되므로 이 제약에 해당한다 — 그래서 `auth` 기본값은 `token` 이다.
+# 오늘 trusted publishing 을 쓰려면 `pypi-publish` 스텝을 **최상위(non-reusable)
+# 워크플로**로 옮겨야 하는데, 이 아키텍처(모든 발행을 컴포넌트로 위임)는 그렇게 하지
+# 않는다. 업스트림이 고쳐지면 기본값을 oidc 로 되돌릴 수 있으므로 OIDC 스텝은 지우지
+# 않고 명시적 opt-in 경로로 남긴다(config 에서 auth: oidc 를 명시하면 여전히 시도된다 —
+# 소비자가 업스트림 수정을 앞서 추적 중일 수 있다).
+#
+# auth: oidc  → PyPI trusted publishing. caller job 이 id-token: write 를 준다.
+#               ⚠ 위 제약으로 재사용 워크플로 체인에서는 오늘 기준 동작하지 않는다.
+# auth: token → secrets.PYPI_API_TOKEN. 기본값(권장 — trusted publishing 제약 회피).
+# 두 경로를 한 스텝으로 합치지 말 것: 빈 `password:` 는 "제공됨"으로 취급되어 액션의
+# trusted-publishing 자동감지를 억제한다.
+#
+# 출처: https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
+#       https://github.com/pypa/gh-action-pypi-publish (README — Trusted Publishing 섹션)
+#       https://github.com/pypa/warehouse/issues/11096 (job_workflow_ref vs workflow_ref)
+name: deploy-pypi
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "배포할 git 태그(verbatim — 접두사를 재조립하지 않는다)"
+        required: true
+        type: string
+      version:
+        description: "actions/setup-python 에 넘길 파이썬 버전"
+        required: false
+        default: "3.12"
+        type: string
+      build:
+        description: "dist/* 를 만드는 빌드 명령(예: uv build). 비우면 빌드 스텝 생략"
+        required: false
+        default: ""
+        type: string
+      auth:
+        description: >-
+          oidc | token (기본 token — 재사용 워크플로에서는 PyPI trusted
+          publishing(oidc)이 동작하지 않는다: pypa/warehouse#11096)
+        required: false
+        default: "token"
+        type: string
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}   # 호출된 워크플로의 github.sha 는 호출자의 것이다
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.version }}
+
+      # 값을 run: 에 직접 보간하지 않고 env 로 넘긴다(따옴표/개행 보존 + 템플릿 인젝션 린트 회피).
+      - if: inputs.build != ''
+        env:
+          VWAY_BUILD: ${{ inputs.build }}
+        run: eval "$VWAY_BUILD"
+
+      # gh-action-pypi-publish 는 빌드하지 않는다 — dist/* 가 이미 있어야 한다.
+      - if: inputs.auth == 'oidc'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - if: inputs.auth == 'token'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

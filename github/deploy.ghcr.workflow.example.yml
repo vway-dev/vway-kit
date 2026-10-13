@@ -1,0 +1,63 @@
+# GHCR(ghcr.io) 이미지 빌드·푸시 컴포넌트 — /vdev-init 이 `.github/workflows/deploy-ghcr.yml`
+# 로 정적 복사한다. permissions(contents: read, packages: write)는 caller job 이 준다.
+# GITHUB_TOKEN 으로 충분하다(PAT 불필요). attestation/provenance 는 범위 밖이므로
+# id-token: write · attestations: write 를 요구하지 않는다.
+#
+# image·context·dockerfile 은 required 다. 기본값(`.` 와 `<context>/Dockerfile`)은
+# **렌더러가 config 에서 계산해 with: 로 넘긴다** — 빈 문자열이 `file:` 로 전달되면
+# build-push-action 이 선언한 `{context}/Dockerfile` 기본값이 억제되기 때문이다.
+#
+# 이미지 태그는 `type=raw,value=${{ inputs.tag }}` 로 붙인다. metadata-action 의
+# `type=semver` 는 github.ref 가 태그일 때만 해석되는데, 호출된 워크플로의 github.ref 는
+# **호출자의 브랜치**다.
+# 출처: https://github.com/docker/build-push-action · https://github.com/docker/metadata-action
+name: deploy-ghcr
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "배포할 git 태그(verbatim — 이미지 태그로도 그대로 쓴다)"
+        required: true
+        type: string
+      image:
+        description: "이미지 이름(예: ghcr.io/OWNER/REPO/api)"
+        required: true
+        type: string
+      context:
+        description: "docker build 컨텍스트"
+        required: true
+        type: string
+      dockerfile:
+        description: "Dockerfile 경로"
+        required: true
+        type: string
+
+jobs:
+  ghcr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ inputs.image }}
+          tags: type=raw,value=${{ inputs.tag }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

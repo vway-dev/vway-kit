@@ -1,0 +1,55 @@
+# github/doc-style.workflow.example.yml 의 도그푸드 — 소비자가 받는 잡을 이 저장소 자신에게도
+# 검. 여기는 호스트 설치(.claude/vway-kit/)가 없어 SOURCE 스크립트를 직접 돌리므로,
+# vdev-config.doc_style 대신 명시 범위를 줌(`--lint-config` 는 호스트 전용).
+# 범위의 SSOT 는 아래 `env` 두 값 — tests/doc_style/test_scope_and_cli.py 가 같은 값을 읽어 같은 판정을
+# 함(목록이 둘이면 테스트 green·CI red 가 가능해짐).
+# `.py`·`.sh`·`.bash` 도 대상 — 주석·독스트링이 이 저장소 산문의 절반이고, 파일 역할·근거의 SSOT.
+# 확장자 집합은 검사기의 `DEFAULT_GLOBS`(= `prose_of` 가 읽을 줄 아는 것)와 같게 둠.
+# 글롭을 디렉터리로 열거하지 않음: git 글롭의 `*` 는 `/` 를 넘으므로 확장자만으로 새 디렉터리까지
+# 자동으로 덮음.
+# docs/superpowers/ 는 설계상 범위 밖 — 플랜·스펙은 특정 시점의 기록이라 출하되지 않음.
+# CHANGELOG.md 도 밖 — semantic-release 가 커밋 제목으로 재생성하므로, 금지어를 담은 제목
+# 하나가 이후 모든 push 에서 이 잡을 붉게 만들고 release.yml 을 깨지 않고는 못 고침.
+name: doc-style
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  doc-style:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DOC_STYLE_GLOBS: "*.md *.py *.sh *.bash"
+      DOC_STYLE_EXCLUDE: "^docs/superpowers/|^CHANGELOG\\.md$"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Lint prose
+        run: |
+          # `set -f` 없이는 셸이 글롭을 러너 작업 디렉터리에 먼저 펼쳐 `*.md` 가 루트의 세
+          # 파일로 굳고 재귀가 사라짐. 글롭을 푸는 주체는 git 이어야 함(`*` 가 `/` 를 넘음).
+          # 경로는 NUL 로 끊어 넘김. 개행으로 넘기면 공백 든 경로가 낱말마다 쪼개지고
+          # 비ASCII 경로는 git 이 C-인용해(`core.quotePath` 기본값) 내보냄 — 그렇게 깨진
+          # 조각은 존재하지 않아 검사기가 조용히 건너뜀. 세 단계가 함께 켜져야 함.
+          # `pipefail` 은 빈 목록을 붉게 만듦 — 러너 기본 `bash -e` 는 파이프 **마지막**
+          # 종료코드만 보므로, `ls-files` 가 죽거나 `grep` 이 아무것도 안 고르면 검사기가
+          # 인자 0개로 돌아 exit 0. 트리 전체의 유일한 판정자가 내는 그 초록은 판정이 아님.
+          set -f -o pipefail
+          git ls-files -z $DOC_STYLE_GLOBS \
+            | grep -zvE "$DOC_STYLE_EXCLUDE" \
+            | xargs -0 uv run python scripts/doc_style_check.py --root . --lint

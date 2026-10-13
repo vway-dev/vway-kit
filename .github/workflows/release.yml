@@ -1,0 +1,319 @@
+# semantic 버전 릴리스 — main(정식)/stage(rc) push 시 릴리스.
+# vway-release-levels: auto continue patch minor major
+#  · stage : HEAD 커밋의 `Release-Level:` 트레일러로 rc. continue/patch/minor/major 는 결정적
+#            적용(대기 rc 가 있으면 그 base 기준 — continue=rc.N+1), auto·트레일러 없음은 커밋
+#            타입 자동(feat→minor/fix→patch) → X.Y.Z-rc.N.
+#  · main  : 대기 중인 rc 를 정식으로 finalize(-rc.N 제거). PSR 은 강제-어긋난 rc 를
+#            정식화하지 못해(실측: auto=재계산 상향, --patch=이중bump) 결정적 스텝으로 처리.
+#            rc 가 없으면(hotfix 등) 트레일러 patch/minor/major 를 결정적 적용, 없으면 auto.
+# 버전 계산은 scripts/release_version.py — 소비자 템플릿(github/release.*)과 같은 스크립트.
+# 강결합: plugin.json version 이 업데이트 게이팅 SSOT. main 릴리스는 plugin 브랜치를 만들고
+# 두 마켓플레이스의 sha 를 그 plugin 커밋으로 불변 핀(Codex ZIP 은 릴리스에 첨부). release 커밋은 [skip ci] 로 루프 방지.
+# 릴리스 본문: 정식은 PSR CHANGELOG 의 vX.Y.Z(+rc.*) 섹션을 버전매칭 집계(Features/Bug
+#   Fixes/Performance), 비면 GitHub 자동 노트 폴백. rc 는 자동 노트. CHANGELOG 자체는
+#   pyproject exclude_commit_patterns 로 chore 등 배관 커밋을 제외해 깨끗이 유지한다.
+# 인증: 저장소 전용 PAT 시크릿 RELEASE_TOKEN(권장) 또는 미등록 시 내장 GITHUB_TOKEN 폴백
+#       (그 경우 repo Settings→Workflow permissions=Read and write 필요). 요구 권한·설정
+#       절차는 preflight 안내 및 docs/usage/promotion-and-release.md '릴리스 CI 토큰' 절을 SSOT 로 참조.
+name: release
+
+on:
+  push:
+    branches: [main, stage]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # RELEASE_TOKEN 미등록 시 폴백하는 내장 GITHUB_TOKEN 에 쓰기 부여
+                    # (repo Settings → Workflow permissions 이 read-only 면 여전히 막힘 → preflight 안내)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Preflight — 릴리스 쓰기 권한 검증(1회) + 실패 안내 준비
+        env:
+          TOK: ${{ secrets.RELEASE_TOKEN || github.token }}   # 시크릿 없으면 내장 GITHUB_TOKEN 폴백
+          RT: ${{ secrets.RELEASE_TOKEN }}                     # 어느 쪽을 쓰는지 판별용
+          REPO: ${{ github.repository }}
+        run: |
+          # 안내문을 파일로 저장 → preflight 실패·이후 커밋/push 실패(마지막 스텝) 모두 공유(중복 제거).
+          cat > /tmp/release_token_guide.txt <<'G'
+          ============== 릴리스 CI 쓰기 권한 안내 ==============
+          릴리스 워크플로가 커밋/태그 push·릴리스 생성을 하려면 저장소 쓰기 권한이
+          필요합니다. 아래 [A] 또는 [B] 중 하나면 됩니다.
+          [A] (권장·세분화) 저장소 전용 PAT 시크릿 RELEASE_TOKEN
+              1) fine-grained PAT — Settings → Developer settings → Fine-grained
+                 tokens → 이 저장소 선택 → Repository permissions:
+                   Contents = Read and write  (Metadata=Read 자동)
+              2) 저장소 → Settings → Secrets and variables → Actions →
+                 New repository secret → Name: RELEASE_TOKEN
+          [B] (간편·시크릿 불필요) 내장 GITHUB_TOKEN 에 쓰기 허용
+              저장소 → Settings → Actions → General → Workflow permissions →
+              "Read and write permissions" 선택 (관리자 1회 토글)
+          자세히: docs/usage/promotion-and-release.md '릴리스 CI 토큰 (RELEASE_TOKEN)' 절
+          =====================================================
+          G
+          if [ -z "${TOK:-}" ]; then
+            echo "::error::릴리스 토큰이 비어 있습니다."; cat /tmp/release_token_guide.txt; exit 1
+          fi
+          [ -n "${RT:-}" ] && echo "인증: RELEASE_TOKEN 사용" || echo "인증: 내장 GITHUB_TOKEN(폴백) 사용 — 위 [B] 설정 필요"
+          API="https://api.github.com/repos/$REPO"
+          auth=(-H "Authorization: Bearer $TOK" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+          # 저장소 접근(read) 확인.
+          lcode=$(curl -sS -o /tmp/ls.json -w "%{http_code}" "${auth[@]}" "$API/contents" || echo 000)
+          if [ "$lcode" != "200" ]; then
+            echo "::error::저장소 접근 실패(HTTP $lcode)."; cat /tmp/release_token_guide.txt; exit 1
+          fi
+          # 쓰기 권한 검증(비파괴) — 기존 파일에 '틀린 sha' 로 PUT → 403/401=쓰기없음,
+          # 그 외(409 등)=쓰기있음(sha 충돌로 실제 기록 안 됨). .permissions.push 는 fine-grained
+          # PAT 의 실제 스코프가 아니라 사용자 role 을 반영해 신뢰 불가 → 실제 write 를 프로브한다.
+          ppath=$(python3 -c "import json;a=json.load(open('/tmp/ls.json'));print(next((x['path'] for x in a if x.get('type')=='file'),''))" 2>/dev/null || echo "")
+          if [ -n "$ppath" ]; then
+            wcode=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT "${auth[@]}" "$API/contents/$ppath" \
+              -d '{"message":"vway preflight write probe (no-op)","content":"eA==","sha":"0000000000000000000000000000000000000000"}' || echo 000)
+            case "$wcode" in
+              401|403)
+                echo "::error::릴리스 토큰에 쓰기 권한이 없습니다(HTTP $wcode). 위 [A] 또는 [B] 로 부여하세요."
+                cat /tmp/release_token_guide.txt; exit 1 ;;
+              *) echo "preflight OK — 쓰기 권한 확인(write-probe HTTP $wcode)." ;;
+            esac
+          else
+            echo "preflight — write 프로브 대상 파일 없음, push 단계에서 확인."
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install python-semantic-release
+        # `==` 로 고정한다(rule-version-pinning — 이 제품이 소비자에게 주입하는 룰이다).
+        # 값은 uv.lock 이 이미 해석해 둔 것과 같다. 부동 지정이었을 때 gitpython 3.1.60 이
+        # `Actor.name_email_regex` 를 제거하면서 PSR 10.x 가 그것을 참조하다 죽었고
+        # ("type object 'Actor' has no attribute 'name_email_regex'", 2026-08-28), 코드가
+        # 한 줄도 안 바뀐 저장소의 릴리스가 그날 갑자기 실패했다. 업그레이드는 이 줄을
+        # 고치는 의도적 변경으로만 한다.
+        run: pip install "python-semantic-release==10.5.3" "gitpython==3.1.50"
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Release (stage=rc bump / main=finalize)
+        id: sr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          RV=scripts/release_version.py
+          git fetch --tags --force --quiet origin || true
+          MSG="$(git log -1 --pretty=%B)"
+          TAGS="$(git tag --list)"
+          # 계산한 버전 $V 를 pyproject·plugin.json 에 적용하고 커밋·태그·push.
+          apply() {
+            V="$1"
+            sed -i -E 's/^version = ".*"$/version = "'"$V"'"/' pyproject.toml
+            sed -i -E 's/("version":[[:space:]]*)"[^"]*"/\1"'"$V"'"/' .claude-plugin/plugin.json
+            sed -i -E 's/("version":[[:space:]]*)"[^"]*"/\1"'"$V"'"/' .codex-plugin/plugin.json
+            git add pyproject.toml .claude-plugin/plugin.json .codex-plugin/plugin.json
+            git commit -m "chore(release): $V [skip ci]" -m "$2"
+            git tag "v$V"
+            # 일시 장애만 재시도, rebase 안 함 — 버전·노트가 이 트리에서 계산됨.
+            # --atomic: 브랜치와 태그가 함께 오르거나 둘 다 안 오름.
+            for attempt in 1 2 3; do
+              git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "v$V" && break
+              [ "$attempt" -lt 3 ] || exit 1
+              sleep $((attempt * 5))
+            done
+          }
+          BEFORE="$(git rev-parse HEAD)"
+          if [ "${{ github.ref_name }}" = "stage" ]; then
+            NEXT="$(python3 "$RV" next --message "$MSG" --tags "$TAGS")" || exit 1
+            if [ "$NEXT" != auto ]; then
+              # 강제 레벨은 결정적 적용 — PSR 의 --<level> --as-prerelease 는 continue 를 표현하지 못함.
+              apply "$NEXT" "Release-Level 트레일러로 계산한 $NEXT 를 결정적으로 적용."
+            else
+              # auto·트레일러 없음: 커밋 타입으로 rc 를 유도. GitHub Release 는 아래
+              # "Create GitHub Release" 스텝이 만듦(--no-vcs-release).
+              semantic-release version --commit --tag --push --changelog --no-vcs-release
+            fi
+          else
+            # main: 대기 중인 rc 를 정식으로 finalize. PSR 은 강제-어긋난 rc 를 못 살려(실측)
+            # 결정적으로 -rc.N 을 제거한다.
+            CUR="$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+            case "$CUR" in
+              *-*)
+                STABLE="$(python3 "$RV" finalize --rc "v$CUR" --tags "$TAGS")" || exit 1
+                echo "finalize: $CUR -> $STABLE"
+                apply "$STABLE" "rc $CUR 를 정식 $STABLE 으로 finalize(강제-어긋난 rc 는 PSR 로 정식화 불가)."
+                ;;
+              *)
+                # rc 없음(hotfix 등): 트레일러 patch/minor/major 면 결정적 적용, 없으면 auto.
+                NEXT="$(python3 "$RV" stable --message "$MSG" --tags "$TAGS")" || exit 1
+                if [ "$NEXT" != auto ]; then
+                  apply "$NEXT" "Release-Level 트레일러로 계산한 $NEXT 를 결정적으로 적용."
+                else
+                  echo "no prerelease pending → 정상 auto 릴리스"
+                  semantic-release version --commit --tag --push --changelog --no-vcs-release
+                fi
+                ;;
+            esac
+          fi
+          AFTER="$(git rev-parse HEAD)"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no release (no version-bumping commits since last tag)"
+          fi
+
+      - name: Publish the plugin branch (main only)
+        id: dist
+        if: ${{ github.ref_name == 'main' && steps.sr.outputs.released == 'true' }}
+        run: |
+          # 마켓이 설치하는 것은 plugin 브랜치 — 릴리스 커밋에서 런타임 파일만 고른 커밋(목록은 plugin_dist.py).
+          git fetch origin plugin || true
+          PARENT="$(git rev-parse -q --verify refs/remotes/origin/plugin || true)"
+          TAG="$(git describe --tags --abbrev=0)"
+          ZIP="$RUNNER_TEMP/vway-kit-codex-${TAG#v}.zip"
+          DIST_SHA="$(python .github/scripts/plugin_dist.py build --parent "$PARENT" --message "chore(release): plugin $TAG [skip ci]" --codex-zip "$ZIP")"
+          # 태그 push 뒤라 재실행으로 복구 못 함 — 유계 재시도. plugin 브랜치는 이 잡만 씀.
+          for attempt in 1 2 3; do
+            git push origin "$DIST_SHA:refs/heads/plugin" && break
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep $((attempt * 5))
+          done
+          echo "sha=$DIST_SHA" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Pin both marketplaces to the plugin branch (main only)
+        if: ${{ steps.dist.outputs.sha != '' }}
+        env:
+          DIST_SHA: ${{ steps.dist.outputs.sha }}
+        run: |
+          python .github/scripts/plugin_dist.py pin "$DIST_SHA"   # 방금 push 한 plugin 커밋
+          git add .claude-plugin/marketplace.json .agents/plugins/marketplace.json
+          if git diff --cached --quiet; then
+            echo "marketplace sha already current"
+            exit 0
+          fi
+          git commit -m "chore(release): pin marketplace sha [skip ci]" \
+            -m "두 마켓플레이스를 이 릴리스로 만든 plugin 브랜치 커밋으로 핀한다."
+          # 태그 push 뒤라 재실행으로 복구 못 함 — 거부되면 원격 위로 rebase 하며 유계 재시도.
+          # 핀은 이미 push 된 plugin 커밋 sha 라 rebase 가 핀 대상을 바꾸지 않음.
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && break
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+
+      - name: Sync uv.lock to released version
+        if: ${{ steps.sr.outputs.released == 'true' }}
+        run: |
+          pip install "uv==0.12.7"           # 부동 금지 — 태그 push 이후 스텝이라 여기서 깨지면 반쯤 릴리스된다
+          uv lock                               # 파생물: bump/finalize 된 pyproject 버전으로 재생성
+          git add uv.lock
+          if git diff --cached --quiet; then
+            echo "uv.lock already in sync"
+            exit 0
+          fi
+          git commit -m "chore(release): sync uv.lock [skip ci]" \
+            -m "uv.lock 의 프로젝트 버전을 릴리스 버전에 맞춘다."
+          # 태그 push 뒤라 재실행으로 복구 못 함 — 거부되면 원격 위로 rebase 하며 유계 재시도.
+          for attempt in 1 2 3; do
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep $((attempt * 5))
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+
+      - name: Create GitHub Release
+        if: ${{ steps.sr.outputs.released == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="$(git describe --tags --abbrev=0)"
+          if gh release view "$TAG" &>/dev/null; then
+            gh release delete "$TAG" --yes
+          fi
+          if [ "$REF_NAME" = "stage" ]; then
+            # rc(prerelease): GitHub 자동 노트 유지.
+            gh release create "$TAG" --title "$TAG" --generate-notes --prerelease
+          else
+            # 정식 본문: PSR CHANGELOG 에서 이 버전(정식 vX.Y.Z + 그 rc.*) 섹션의
+            # Features/Bug Fixes/Performance 만 버전매칭으로 집계한다. finalize 는 실제
+            # 내용을 rc 태그에 귀속시켜 정식 섹션이 비므로 vX.Y.Z 와 vX.Y.Z-rc.* 를 함께
+            # 매칭한다. Chores 등은 버킷 밖이라 자동 제외. 매칭이 비면 GitHub 자동 노트 폴백.
+            VER="${TAG#v}"
+            BODY="$(awk -v ver="$VER" '
+              BEGIN { hdr="^## v" ver "([ (]|-rc[.])" }
+              /^## /  { inver=($0 ~ hdr); cur=""; next }
+              /^### / { cur=""; if (inver) { h=tolower($0);
+                        if (h ~ /breaking/) cur="brk";
+                        else if (h ~ /features/) cur="feat";
+                        else if (h ~ /bug fixes/) cur="fix";
+                        else if (h ~ /performance/) cur="perf" } next }
+              cur=="brk"  { brk=brk $0 "\n" }
+              cur=="feat" { feat=feat $0 "\n" }
+              cur=="fix"  { fix=fix $0 "\n" }
+              cur=="perf" { perf=perf $0 "\n" }
+              END { if (brk)  printf "### Breaking Changes\n%s\n", brk;
+                    if (feat) printf "### Features\n%s\n", feat;
+                    if (fix)  printf "### Bug Fixes\n%s\n", fix;
+                    if (perf) printf "### Performance\n%s\n", perf }
+            ' CHANGELOG.md 2>/dev/null || true)"   # 파일 부재/오류 → 빈 값 → 아래 자동 노트 폴백
+            if [ -n "$(printf '%s' "$BODY" | tr -d '[:space:]')" ]; then
+              printf '%s' "$BODY" > "$RUNNER_TEMP/relnotes.md"
+              gh release create "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/relnotes.md"
+            else
+              gh release create "$TAG" --title "$TAG" --generate-notes   # 매칭 섹션 없으면 폴백
+            fi
+          fi
+
+      # OpenAI 플러그인 디렉터리는 저장소가 아니라 ZIP 업로드를 받음.
+      - name: Attach the Codex directory package (main only)
+        if: ${{ steps.dist.outputs.zip != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: gh release upload "$(git describe --tags --abbrev=0)" "${{ steps.dist.outputs.zip }}" --clobber
+
+      - name: 방금 만든 태그 노출
+        id: released
+        run: |
+          if [ "${{ steps.sr.outputs.released }}" = "true" ]; then
+            echo "tag=$(git describe --tags --abbrev=0)" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"   # 릴리스하지 않음 → 노트 스텝 스킵
+          fi
+
+      - name: 정식 릴리스 노트 — CHANGELOG 절
+        if: ${{ github.ref_name == 'main' && steps.released.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          VWAY_SCRIPTS: scripts
+          TAG: ${{ steps.released.outputs.tag }}
+        run: |
+          # >>> vway-release-notes — 일곱 릴리스 워크플로 공통(tests/test_release_notes_block.py 가 고정)
+          CS="$VWAY_SCRIPTS/changelog_section.py"
+          if [ -f "$CS" ] && python3 "$CS" extract --version "${TAG#v}" > "$RUNNER_TEMP/notes.md"; then
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+              || echo "::warning::$TAG 릴리스 본문을 CHANGELOG 절로 바꾸지 못했습니다."
+          else
+            echo "CHANGELOG 에 $TAG 정식 절 없음 — 만들어진 릴리스 본문을 그대로 둡니다."
+          fi
+          # <<< vway-release-notes
+
+      - name: 실패 안내 — 커밋/태그 push·릴리스 실패 시 쓰기 권한 점검
+        if: ${{ failure() }}
+        run: |
+          echo "::error::릴리스 실패. 커밋/태그 push 또는 릴리스 생성 단계가 실패했다면 릴리스 토큰 쓰기 권한 문제일 가능성이 큽니다(RELEASE_TOKEN 또는 Workflow permissions)."
+          cat /tmp/release_token_guide.txt 2>/dev/null || echo "(안내문 미생성 — preflight 이전 단계에서 실패)"

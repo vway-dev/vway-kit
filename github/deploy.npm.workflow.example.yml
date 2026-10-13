@@ -1,0 +1,87 @@
+# npm 발행 컴포넌트 — /vdev-init 이 `.github/workflows/deploy-npm.yml` 로 정적 복사한다.
+# permissions 는 caller job 이 준다(컴포넌트는 선언하지 않는다).
+#
+# auth: oidc  → npm trusted publishing. **npm CLI >= 11.5.1 · Node >= 22.14.0** 을 요구하며
+#               NODE_AUTH_TOKEN 이 필요 없고 provenance 가 자동 생성된다. version 이 낮으면
+#               런타임에 실패한다(렌더러는 문자열 비교가 취약해 검증하지 않는다).
+# auth: token → secrets.NPM_TOKEN. NODE_AUTH_TOKEN 은 setup-node 스텝이 아니라
+#               **publish 스텝**에 걸어야 한다(setup-node 가 .npmrc 만 구성하기 때문).
+#
+# ⚠ 신뢰발행 등록 대상 — PyPI 와 다르다(같은 재사용 워크플로 아키텍처에서 npm 은 동작한다).
+# docs.npmjs.com trusted publishers 원문: "Some GitHub Actions workflows use
+# `workflow_call` to invoke other workflows that run `npm publish`... validation checks
+# the calling workflow's name instead of the workflow that actually contains the publish
+# command." 즉 npm 은 **최상위 호출 워크플로**의 이름으로 매칭하므로(PyPI 의
+# job_workflow_ref 매칭과 반대), 신뢰할 게시자는 이 컴포넌트(deploy-npm.yml)가 아니라
+# **최상위 `release.yml`** 을 대상으로 등록해야 한다. 소비자가 `workflow_dispatch` 로
+# `deploy.yml` 을 직접 트리거해 배포하는 경우 `deploy.yml` 도 추가로 등록해야 한다.
+# 원문 계속: "The `id-token: write` permission must also be given to both parent and
+# child workflows." — 이 컴포넌트는 permissions 를 선언하지 않으므로(위 문단) caller job
+# 의 부여를 그대로 물려받아 이 요구를 자동으로 만족한다.
+#
+# 의존성 설치·트랜스파일은 build 명령이 전담한다(예: "npm ci && npm run build --if-present").
+# 출처: https://docs.npmjs.com/trusted-publishers · https://github.com/actions/setup-node
+name: deploy-npm
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "배포할 git 태그(verbatim)"
+        required: true
+        type: string
+      version:
+        description: "actions/setup-node 에 넘길 Node 버전(OIDC 는 >= 22.14.0)"
+        required: false
+        default: "24"
+        type: string
+      build:
+        description: "설치·빌드 명령. 비우면 스텝 생략"
+        required: false
+        default: ""
+        type: string
+      auth:
+        description: "oidc | token"
+        required: false
+        default: "oidc"
+        type: string
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.version }}
+          registry-url: "https://registry.npmjs.org"
+
+      - if: inputs.build != ''
+        env:
+          VWAY_BUILD: ${{ inputs.build }}
+        run: eval "$VWAY_BUILD"
+
+      # prerelease 태그(`vX.Y.Z-rc.N`)는 `next` dist-tag 로 발행 — `--tag` 없이 내면 `latest` 가 되고,
+      # 버전을 고정하지 않은 모든 `npm install` 이 그것을 받음.
+      - if: inputs.auth == 'oidc'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            *-*) npm publish --tag next ;;
+            *) npm publish ;;
+          esac
+
+      - if: inputs.auth == 'token'
+        env:
+          TAG: ${{ inputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          case "$TAG" in
+            *-*) npm publish --tag next ;;
+            *) npm publish ;;
+          esac

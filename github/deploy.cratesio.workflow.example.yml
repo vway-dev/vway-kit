@@ -1,0 +1,67 @@
+# crates.io 발행 컴포넌트 — /vdev-init 이 `.github/workflows/deploy-cratesio.yml` 로 정적 복사.
+# permissions 는 caller job 이 준다.
+#
+# `cargo publish` 는 **기본으로 전체 빌드 검증**을 하므로 별도 빌드 스텝이 없다.
+# ubuntu-latest 에 Rust 가 선탑재되어 toolchain 액션도 기본으로 두지 않는다 — version 을
+# 명시했을 때만 dtolnay/rust-toolchain 이 돈다(빈 값을 with 로 넘기면 액션의 default 가
+# 억제되므로 `if:` 로 스텝 자체를 건너뛴다).
+#
+# auth: oidc  → rust-lang/crates-io-auth-action 이 단기 토큰을 발급. caller 가 id-token: write.
+# auth: token → secrets.CARGO_REGISTRY_TOKEN.
+#
+# ⚠ 신뢰발행 등록 대상 — npm 과 동일한 이유로 이 컴포넌트가 아니라 **최상위 `release.yml`**
+# 을 대상으로 등록해야 한다(소비자가 `workflow_dispatch` 로 `deploy.yml` 을 직접 트리거해
+# 배포한다면 `deploy.yml` 도 추가 등록). crates.io 의 `GitHubClaims` 구조체
+# (rust-lang/crates.io 저장소 `crates/crates_io_trustpub/src/github/claims.rs`)는
+# `workflow_ref`(최상위 호출자)만 담고 PyPI 식의 `job_workflow_ref`(가장 안쪽 재사용
+# 워크플로)는 아예 없다 — 즉 항상 최상위 호출자로 매칭된다. **주의: 이는 crates.io 공식
+# 산문 문서가 아니라 소스코드에서 직접 도출한 추론**이므로, 업스트림이 문서화하면 그
+# 문서로 교체할 것.
+# 출처: https://crates.io/docs/trusted-publishing · https://github.com/rust-lang/crates-io-auth-action
+name: deploy-cratesio
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "배포할 git 태그(verbatim)"
+        required: true
+        type: string
+      version:
+        description: "dtolnay/rust-toolchain 의 toolchain(예: stable). 비우면 러너 기본 Rust"
+        required: false
+        default: ""
+        type: string
+      auth:
+        description: "oidc | token"
+        required: false
+        default: "oidc"
+        type: string
+
+jobs:
+  cratesio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - if: inputs.version != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.version }}
+
+      - if: inputs.auth == 'oidc'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - if: inputs.auth == 'oidc'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish
+
+      - if: inputs.auth == 'token'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish

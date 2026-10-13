@@ -1,0 +1,191 @@
+# 의미기반 릴리스 (Rust/cargo-release) — /vdev-init 이 vdev-config.versioning 으로 렌더.
+# cargo-release는 커밋 타입 기반 자동 버전계산을 지원하지 않는다(level/버전 명시 필수) — 이
+# 워크플로가 최신 "정식"(=-rc 없는) 태그를 베이스로 `Release-Level:` 트레일러 레벨만큼 bump해 계산한
+# 버전을 cargo-release 에 직접 인자로 넘긴다(bump+commit+tag+push+publish 일괄 수행).
+# vway-release-levels: continue patch minor major
+#  · PRERELEASE push : HEAD 커밋의 `Release-Level:` 트레일러로 rc. 대기 rc 가 있으면 그 base 기준
+#                      (continue=rc.N+1, patch/minor/major=base 상향 rc.1), 없으면 최신 정식 기준.
+#                      트레일러 없음 → 대기 rc 가 있으면 continue, 없으면 patch(커밋 타입 자동계산 없음).
+#  · STABLE push     : 도달 가능한 rc 가 있으면 접미사만 제거해 finalize. 없으면(hotfix 등)
+#                      트레일러 patch/minor/major 로 정식 직접 릴리스, 트레일러 없으면 patch.
+# 버전 계산은 호스트 사본 .claude/vway-kit/scripts/release_version.py(/vdev-init 이 복사).
+# crates.io 발행은 이 워크플로가 하지 않는다(--no-publish) — vdev-config.deploy 의
+# cratesio 타깃(.github/workflows/deploy-cratesio.yml)이 태그를 받아 cargo publish 한다.
+# 인증(git push): 저장소 전용 PAT 시크릿 RELEASE_TOKEN(권장) 또는 미등록 시 내장 GITHUB_TOKEN 폴백.
+# 참고: 커밋 이력 기반 완전자동화가 필요하면 release-plz 를 검토(이 템플릿은 사용자가 매번
+#       level 을 선택하는 명시적 모델).
+# 출처: https://github.com/crate-ci/cargo-release (README, docs/reference.md)
+name: release
+
+on:
+  push:
+    branches: [__VWAY_STABLE__, __VWAY_PRERELEASE__]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      # 방금 만든 태그(verbatim). 릴리스하지 않은 실행이면 빈 문자열.
+      # deploy 배선(.github/workflows/deploy.yml 호출)이 이 값으로 스킵을 판정한다.
+      tag: ${{ steps.released.outputs.tag }}
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Preflight — 릴리스 쓰기 권한 검증(1회)
+        env:
+          TOK: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RT: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat > /tmp/release_token_guide.txt <<'G'
+          ============== 릴리스 CI 쓰기 권한 안내 ==============
+          릴리스 워크플로가 커밋/태그 push·릴리스 생성을 하려면 저장소 쓰기 권한이
+          필요합니다. 아래 [A] 또는 [B] 중 하나면 됩니다.
+          [A] (권장·세분화) 저장소 전용 PAT 시크릿 RELEASE_TOKEN
+              1) fine-grained PAT — Settings → Developer settings → Fine-grained
+                 tokens → 이 저장소 선택 → Repository permissions:
+                   Contents = Read and write  (Metadata=Read 자동)
+              2) 저장소 → Settings → Secrets and variables → Actions →
+                 New repository secret → Name: RELEASE_TOKEN
+          [B] (간편·시크릿 불필요) 내장 GITHUB_TOKEN 에 쓰기 허용
+              저장소 → Settings → Actions → General → Workflow permissions →
+              "Read and write permissions" 선택 (관리자 1회 토글)
+          자세히: docs/operations/commit-versioning-guide.md (릴리스 토큰)
+          =====================================================
+          G
+          if [ -z "${TOK:-}" ]; then
+            echo "::error::릴리스 토큰이 비어 있습니다."; cat /tmp/release_token_guide.txt; exit 1
+          fi
+          [ -n "${RT:-}" ] && echo "인증: RELEASE_TOKEN 사용" || echo "인증: 내장 GITHUB_TOKEN(폴백) 사용 — 위 [B] 설정 필요"
+          API="https://api.github.com/repos/$REPO"
+          auth=(-H "Authorization: Bearer $TOK" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+          lcode=$(curl -sS -o /tmp/ls.json -w "%{http_code}" "${auth[@]}" "$API/contents" || echo 000)
+          if [ "$lcode" != "200" ]; then
+            echo "::error::저장소 접근 실패(HTTP $lcode)."; cat /tmp/release_token_guide.txt; exit 1
+          fi
+          ppath=$(python3 -c "import json;a=json.load(open('/tmp/ls.json'));print(next((x['path'] for x in a if x.get('type')=='file'),''))" 2>/dev/null || echo "")
+          if [ -n "$ppath" ]; then
+            wcode=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT "${auth[@]}" "$API/contents/$ppath" \
+              -d '{"message":"vway preflight write probe (no-op)","content":"eA==","sha":"0000000000000000000000000000000000000000"}' || echo 000)
+            case "$wcode" in
+              401|403)
+                echo "::error::릴리스 토큰에 쓰기 권한이 없습니다(HTTP $wcode). 위 [A] 또는 [B] 로 부여하세요."
+                cat /tmp/release_token_guide.txt; exit 1 ;;
+              *) echo "preflight OK — 쓰기 권한 확인(write-probe HTTP $wcode)." ;;
+            esac
+          else
+            echo "preflight — write 프로브 대상 파일 없음, push 단계에서 확인."
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: 릴리스 전 최신 태그 기록
+        id: pretag
+        run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: 다음 버전 계산
+        id: ver
+        run: |
+          set -e
+          # >>> vway-release-version — 다섯 릴리스 템플릿 공통(tests/test_release_rc_version.py 가 고정)
+          RV=.claude/vway-kit/scripts/release_version.py
+          if [ ! -f "$RV" ]; then
+            echo "::error::$RV 없음 — /vdev-init 을 다시 실행해 스크립트 사본을 커밋하세요."
+            exit 1
+          fi
+          git fetch --tags --force --quiet origin || true
+          MSG="$(git log -1 --pretty=%B)"
+          TAGS="$(git tag --list)"
+          # <<< vway-release-version
+          if [ -n "$(git tag --points-at HEAD)" ]; then
+            # 릴리스 태그가 이 커밋에 얹혀 있음 — 백머지 push 나 릴리스 커밋의 재실행.
+            # 다시 rc 를 내면 아무도 고르지 않은 유령 시리즈가 staging 에 생긴다.
+            echo "이 커밋에 이미 태그가 있음 — 릴리스된 커밋의 재실행, 스킵."
+            echo "action=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.ref_name }}" = "__VWAY_PRERELEASE__" ]; then
+            # 트레일러 없음: 대기 rc 가 있으면 continue, 없으면 patch — 이 도구는 커밋 타입으로 레벨을 못 정함.
+            NEXT="$(python3 "$RV" next --message "$MSG" --tags "$TAGS" --auto-level patch)"
+          else
+            # 대기 rc 가 이 커밋에서 도달 가능하면 그것을 정식화. `git describe` 는 hotfix 가
+            # 먼저 낸 정식 태그를 집어 가드를 건너뛰므로 태그 목록 + 도달성으로 판정한다.
+            PENDING="$(python3 "$RV" state --tags "$TAGS" | sed -n '1s/^pending: //p')"
+            if [ "$PENDING" != none ] && git merge-base --is-ancestor "$PENDING" HEAD; then
+              # 가드만 — 접미사 제거는 cargo release release 가 함.
+              STABLE="$(python3 "$RV" finalize --rc "$PENDING" --tags "$TAGS")"
+              echo "action=finalize" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # 도달 가능한 rc 없음(hotfix 등): 트레일러 레벨로 정식 직접 릴리스, 없으면 patch.
+            NEXT="$(python3 "$RV" stable --message "$MSG" --tags "$TAGS" --default patch)"
+          fi
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "action=bump" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-release
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-release@1.1.5
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: cargo release (bump)
+        if: ${{ steps.ver.outputs.action == 'bump' }}
+        run: cargo release "${{ steps.ver.outputs.version }}" --execute --no-confirm --no-publish
+
+      - name: cargo release (finalize)
+        if: ${{ steps.ver.outputs.action == 'finalize' }}
+        run: cargo release release --execute --no-confirm --no-publish
+
+      - name: 방금 만든 태그 노출
+        id: released
+        env:
+          BEFORE: ${{ steps.pretag.outputs.tag }}
+        run: |
+          # jreleaser 처럼 도구가 원격에서 태그를 만드는 경우가 있어 fetch 가 필수다.
+          git fetch --tags --force
+          AFTER="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
+            echo "tag=$AFTER" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"   # 릴리스하지 않음 → deploy 스킵
+          fi
+
+      - name: 정식 릴리스 노트 — CHANGELOG 절
+        if: ${{ github.ref_name == '__VWAY_STABLE__' && steps.released.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          VWAY_SCRIPTS: .claude/vway-kit/scripts
+          TAG: ${{ steps.released.outputs.tag }}
+        run: |
+          # >>> vway-release-notes — 일곱 릴리스 워크플로 공통(tests/test_release_notes_block.py 가 고정)
+          CS="$VWAY_SCRIPTS/changelog_section.py"
+          if [ -f "$CS" ] && python3 "$CS" extract --version "${TAG#v}" > "$RUNNER_TEMP/notes.md"; then
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+              || echo "::warning::$TAG 릴리스 본문을 CHANGELOG 절로 바꾸지 못했습니다."
+          else
+            echo "CHANGELOG 에 $TAG 정식 절 없음 — 만들어진 릴리스 본문을 그대로 둡니다."
+          fi
+          # <<< vway-release-notes
+
+      - name: 실패 안내 — 릴리스 실패 시 권한 점검
+        if: ${{ failure() }}
+        run: |
+          echo "::error::릴리스 실패. RELEASE_TOKEN 쓰기 권한 문제일 수 있습니다."
+          cat /tmp/release_token_guide.txt 2>/dev/null || true

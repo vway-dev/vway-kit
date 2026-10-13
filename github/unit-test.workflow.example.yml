@@ -1,0 +1,69 @@
+# 유닛 테스트 CI — /vdev-init 이 vdev-config.unit_test 로 렌더링한 산출물.
+# 직접 수정해도 /vdev-init 재실행은 덮어쓰지 않고 "수동 확인"으로 보고만 한다.
+#
+# 언어는 추측하지 않는다 — config 의 `language:` 로 명시 선언한다. 공식 setup action
+# 5종(python/node/java/go/rust)을 if: matrix.language 로 게이팅하고, 표에 없는 언어
+# (scala·c# 등)는 matrix.setup 셸 명령이 런타임을 전담한다. 덕분에 언어가 늘어도
+# 템플릿을 고칠 필요 없이 config 만으로 확장된다.
+#
+# 공식 setup action 5종은 matrix.version 이 비어 있으면 실패한다(빈 with: 값은 action
+# 자체의 default 를 무력화한다) — 이 5개 언어는 vdev-config.yaml 의 job 마다 version 을
+# 반드시 채워야 하고, 비어 있는 job 은 /vdev-init 렌더 시 matrix 에서 제외·보고된다.
+name: unit-test
+
+on:
+  push:
+    branches: [__VWAY_BRANCHES__]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: __VWAY_TIMEOUT__
+    strategy:
+      fail-fast: false            # 한 모듈이 실패해도 나머지 모듈 테스트는 계속
+      matrix:
+        include: __VWAY_MATRIX_INCLUDE__
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: matrix.language == 'python'
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.version }}
+
+      - if: matrix.language == 'node'
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.version }}
+
+      - if: matrix.language == 'java'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.version }}
+
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.version }}
+
+      - if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.version }}
+
+      # 이스케이프 해치 — 공식 action 으로 안 되는 런타임/의존성 준비(uv 설치, coursier,
+      # dotnet 등). language 가 빈 문자열인 언어는 이 스텝이 런타임을 전담한다.
+      # 값은 env 로 넘긴다(run: 직접 보간 금지 — 따옴표/개행 보존 + 템플릿 인젝션 린트 회피).
+      - if: matrix.setup != ''
+        env:
+          VWAY_SETUP: ${{ matrix.setup }}
+        run: eval "$VWAY_SETUP"
+
+      - env:
+          VWAY_TEST: ${{ matrix.test }}
+        run: eval "$VWAY_TEST"

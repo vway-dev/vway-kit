@@ -1,0 +1,17 @@
+{
+  "name": "vway-kit",
+  "version": "0.1.0",
+  "description": "Claude Code·Codex 를 지원하는 tier 기반 개발 플러그인",
+  "author": { "name": "vway" },
+  "homepage": "https://github.com/vway-dev/vway-kit",
+  "repository": "https://github.com/vway-dev/vway-kit",
+  "skills": "./skills/",
+  "hooks": "./hooks/codex/hooks.json",
+  "interface": {
+    "displayName": "vway-kit",
+    "shortDescription": "Risk-tiered workflow with a commit gate",
+    "developerName": "vway",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}

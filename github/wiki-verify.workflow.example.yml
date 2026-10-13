@@ -1,0 +1,33 @@
+# vway-kit wiki-verify CI — /wiki-init 이 그대로 복사한다(치환 토큰 없음).
+# LLM Wiki 의 layer-3 안전망: layer-2 wiki 게이트는 Claude 세션 커밋만 보므로, 터미널·직접
+# push·CI 커밋으로 들어온 그래프 drift 는 다음 세션 커밋에서야 드러난다 — 여기서 그 push/PR
+# 을 실패시킨다. 읽기 전용: CI 는 graph.yaml 을 절대 만들지 않는다 — --build 를 돌리는
+# 자리는 스킬 단계들뿐이다.
+# 옵트인: /wiki-init 이 자기 그래프의 --verify 가 통과한 뒤 제안한다 — /vdev-init 시점에는
+# 이것이 가리킬 그래프가 없다. wiki 미설치(vdev-config.wiki 부재 또는 enable: false)면
+# wiki_graph.py --verify 가 무출력 exit 0 이라 job 은 green 을 유지한다.
+name: wiki-verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wiki-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python3 -m pip install "pyyaml==6.0.3"
+
+      - name: Verify wiki graph
+        run: python3 .claude/vway-kit/scripts/wiki_graph.py --verify

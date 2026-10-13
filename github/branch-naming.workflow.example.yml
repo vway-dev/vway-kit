@@ -1,0 +1,39 @@
+# 브랜치 네이밍 검증 (Git-flow). /vdev-init 이 렌더. push 트리거(PR 미사용 프로젝트 호환).
+name: branch-naming
+
+on:
+  push:
+    # 태그 push 는 github.ref_name 에 태그 이름을 실음 — branches 필터를 걸어야 태그가 빠짐.
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check branch name
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          echo "Checking: $BRANCH"
+          # 설정된 브랜치명은 문자열로 비교 — 이름은 패턴이 아님.
+          for b in "__VWAY_INTEGRATION__" "__VWAY_PRERELEASE__" "__VWAY_STABLE__"; do
+            if [ "$BRANCH" = "$b" ]; then echo "matches: $b"; exit 0; fi
+          done
+          # dependabot/·renovate/ 는 두 봇이 업데이트 브랜치를 push 하는 자리.
+          PATTERNS=(
+            "^feature/[a-zA-Z0-9][a-zA-Z0-9._/-]*$"
+            "^fix/[a-zA-Z0-9][a-zA-Z0-9._/-]*$"
+            "^docs/[a-zA-Z0-9][a-zA-Z0-9._/-]*$"
+            "^hotfix/[a-zA-Z0-9][a-zA-Z0-9._/-]*$"
+            "^release/[0-9]+\.[0-9]+\.[0-9]+$"
+            "^dependabot/.+$"
+            "^renovate/.+$"
+          )
+          for p in "${PATTERNS[@]}"; do
+            if [[ "$BRANCH" =~ $p ]]; then echo "matches: $p"; exit 0; fi
+          done
+          echo "Invalid branch name: $BRANCH"; exit 1

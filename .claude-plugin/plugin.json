@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "Claude Code·Codex 를 지원하는 tier 기반 개발 플러그인",
   "author": { "name": "vway" },
+  "homepage": "https://github.com/vway-dev/vway-kit",
+  "repository": "https://github.com/vway-dev/vway-kit",
   "license": "Apache-2.0",
+  "keywords": ["workflow", "commit-gate", "code-review", "git-flow"],
+  "icon": "./assets/icon.png",
+  "hooks": "./hooks/claude/hooks.json",
   "userConfig": {
     "teams_webhook_personal": {
       "type": "string",

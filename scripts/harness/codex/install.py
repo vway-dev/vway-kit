@@ -8,6 +8,9 @@
 - matcher 판정은 Codex 자신의 문법(`[A-Za-z0-9_|]` 만이면 정확한 이름 목록) — Claude 설치자의
   판정 코드를 재사용하지 않음(같은 `Bash,Read` 가 두 방언에서 다르게 읽힘).
 - trust 확인은 사용자 `config.toml` 을 **읽기만** 함 — 사용자 홈에 쓰지 않음.
+- SessionStart·PostToolUse 세션 훅도 여기서 등록함 — OpenAI 플러그인 디렉터리가 라이프사이클
+  훅을 실은 패키지를 거부하므로 Codex 플러그인은 훅을 싣지 않음. `/vdev-init` 이 그 스크립트를
+  `VWAY_DIR/hooks/` 로 복사함.
 """
 
 from __future__ import annotations
@@ -16,6 +19,11 @@ import copy
 import os
 import re
 from pathlib import Path
+
+try:
+    from _vway_paths import VWAY_DIR
+except ImportError:
+    from scripts._vway_paths import VWAY_DIR
 
 try:
     from harness.gate_spec import GATE
@@ -42,6 +50,33 @@ GATE_HOOK = {
 GATE_ENTRY = {"matcher": "Bash", "hooks": [GATE_HOOK]}
 # 게이트 자신의 훅을 알아보는 두 낱말 — 함께 봐야 호스트의 다른 `gate` 훅과 섞이지 않음.
 MARKER = ("vway-kit", "harness/codex/gate")
+_HOOKS_ROOT = f"$(git rev-parse --show-toplevel)/{VWAY_DIR}/hooks"
+
+
+def _session_hook(script: str, timeout: int, **extra) -> dict:
+    return {
+        "type": "command",
+        "command": f'bash "{_HOOKS_ROOT}/{script}" --harness codex',
+        "commandWindows": f'& "{_HOOKS_ROOT}/codex/run-hook.cmd" {script} --harness codex',
+        "timeout": timeout,
+        **extra,
+    }
+
+
+SESSION_ENTRIES = {
+    "SessionStart": {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [_session_hook("inject-risk-tiers.sh", 30, additionalContextLimit=0)],
+    },
+    "PostToolUse": {
+        "matcher": "apply_patch|Bash",
+        "hooks": [_session_hook("invalidate-gate-markers.sh", 10)],
+    },
+}
+SESSION_SCRIPTS = {
+    event: entry["hooks"][0]["command"].split("/hooks/", 1)[1].split('"', 1)[0]
+    for event, entry in SESSION_ENTRIES.items()
+}
 # Codex 는 이 밖의 최상위 키가 하나라도 있으면 파일 전체를 무시함.
 ALLOWED_TOP = {"description", "hooks"}
 
@@ -213,11 +248,150 @@ def problems(host: Path) -> list[str]:
         and GATE_HOOK in e["hooks"]
         for e in _entries(data)
     )
+    session = _session_problems(data)
     if firing:
-        return []
+        return session
     return [
         "Codex 커밋 게이트가 .codex/hooks.json 에 없습니다 — 위 [!] 를 해결한 뒤 /vdev-init 를"
-        " 다시 실행하세요."
+        " 다시 실행하세요.",
+        *session,
+    ]
+
+
+def _is_session(hook: object, event: str) -> bool:
+    return (
+        isinstance(hook, dict)
+        and isinstance(hook.get("command"), str)
+        and "vway-kit" in hook["command"]
+        and f"/hooks/{SESSION_SCRIPTS[event]}" in hook["command"]
+    )
+
+
+def _load_session(host: Path) -> tuple[dict | None, str | None]:
+    data, err = load_json_object(_path(host), ".codex/hooks.json")
+    if data is None:
+        return None, err
+    if set(data) - ALLOWED_TOP:
+        return None, (
+            "  [!] .codex/hooks.json 에 description·hooks 외 키가 있어 Codex 가 파일 전체를"
+            " 읽지 않습니다 — 수동 확인 필요"
+        )
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict) or any(
+        not isinstance(hooks.get(event, []), list) for event in SESSION_ENTRIES
+    ):
+        return None, "  [!] .codex/hooks.json hooks 형식 비정상 — 세션 훅 미등록(수동 확인)"
+    return data, None
+
+
+def register_session(host: Path) -> str:
+    """SessionStart·PostToolUse 훅 등록. 이미 있으면 skip, 낡은 것은 제자리에서 고침 — 위치가
+    `/hooks` 승인이 묶이는 것의 일부라 옮기지 않음."""
+    data, err = _load_session(host)
+    if data is None:
+        return err
+    changed = added = False
+    for event, want in SESSION_ENTRIES.items():
+        entries = data.setdefault("hooks", {}).setdefault(event, [])
+        ours = [
+            h
+            for e in entries
+            if isinstance(e, dict) and isinstance(e.get("hooks"), list)
+            for h in e["hooks"]
+            if _is_session(h, event)
+        ]
+        if not ours:
+            entries.append(copy.deepcopy(want))
+            changed = added = True
+            continue
+        for h in ours:
+            if h != want["hooks"][0]:
+                h.clear()
+                h.update(copy.deepcopy(want["hooks"][0]))
+                changed = True
+        for e in entries:
+            if (
+                isinstance(e, dict)
+                and e.get("hooks") == want["hooks"]
+                and e.get("matcher") != want["matcher"]
+            ):
+                e["matcher"] = want["matcher"]
+                changed = True
+    if not changed:
+        return "  [=] Codex 세션 훅 이미 등록됨 (skip)"
+    try:
+        _path(host).parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"  [!] .codex 를 만들지 못했습니다({why(exc)}) — 수동 확인 필요"
+    failed = write_json(_path(host), data, host)
+    if failed:
+        return failed
+    verb = "등록" if added else "보정"
+    return (
+        f"  [+] Codex 세션 훅 {verb} (SessionStart·PostToolUse, .codex/hooks.json — Codex 의"
+        " /hooks 에서 승인해야 실행)"
+    )
+
+
+def unregister_session(host: Path) -> str:
+    if not _path(host).is_file():
+        return "  [=] Codex 세션 훅 없음 (skip)"
+    data, err = _load_session(host)
+    if data is None:
+        return err
+    hooks = data.setdefault("hooks", {})
+    removed = 0
+    for event in SESSION_ENTRIES:
+        kept_entries = []
+        for e in hooks.get(event, []):
+            if isinstance(e, dict) and isinstance(e.get("hooks"), list):
+                before = len(e["hooks"])
+                e["hooks"] = [h for h in e["hooks"] if not _is_session(h, event)]
+                removed += before - len(e["hooks"])
+                if before and not e["hooks"] and set(e) == {"matcher", "hooks"}:
+                    continue
+            kept_entries.append(e)
+        if kept_entries:
+            hooks[event] = kept_entries
+        else:
+            hooks.pop(event, None)
+    if not removed:
+        return "  [=] Codex 세션 훅 없음 (skip)"
+    if not hooks and set(data) <= {"hooks"} and not _path(host).is_symlink():
+        data.clear()
+    failed, dropped = write_or_remove(_path(host), data, host, ".codex/hooks.json")
+    if failed:
+        return failed
+    if dropped:
+        return "  [-] Codex 세션 훅 해제 (.codex/hooks.json 삭제 — 남은 훅 없음)"
+    return "  [-] Codex 세션 훅 해제 (.codex/hooks.json)"
+
+
+def session_hooks_remain(host: Path) -> bool:
+    try:
+        raw = _path(host).read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return False
+    return "vway-kit" in raw and any(f"/hooks/{s}" in raw for s in SESSION_SCRIPTS.values())
+
+
+def _session_problems(data: dict) -> list[str]:
+    hooks = data.get("hooks", {})
+    missing = [
+        event
+        for event, want in SESSION_ENTRIES.items()
+        if not any(
+            isinstance(e, dict)
+            and isinstance(e.get("hooks"), list)
+            and want["hooks"][0] in e["hooks"]
+            for e in (hooks.get(event, []) if isinstance(hooks, dict) else [])
+        )
+    ]
+    if not missing:
+        return []
+    return [
+        f"Codex 세션 훅({'·'.join(missing)})이 .codex/hooks.json 에 없습니다 — 룰 주입·게이트"
+        " 증거 무효화가 동작하지 않습니다. /vdev-init 를 다시 실행하세요."
     ]
 
 

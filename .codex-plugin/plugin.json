@@ -5,13 +5,22 @@
   "author": { "name": "vway" },
   "homepage": "https://github.com/vway-dev/vway-kit",
   "repository": "https://github.com/vway-dev/vway-kit",
+  "license": "Apache-2.0",
+  "keywords": ["workflow", "commit-gate", "code-review", "git-flow"],
   "skills": "./skills/",
-  "hooks": "./hooks/codex/hooks.json",
   "interface": {
     "displayName": "vway-kit",
-    "shortDescription": "Risk-tiered workflow with a commit gate",
+    "shortDescription": "Risk-tiered dev workflow gate",
+    "longDescription": "vway-kit scales process rigor to the risk of a change. $vdev classifies a task as Docs or Dev and runs only that tier's skills, and a commit gate that $vdev-init registers in the project's .codex/hooks.json blocks a commit that skipped the classification or its gates. Branch names, test commands and checks live in one config file, so the same setup ports to any language and repository.",
     "developerName": "vway",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Read", "Write"]
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/vway-dev/vway-kit",
+    "defaultPrompt": [
+      "Set up vway-kit in this repo with $vdev-init",
+      "Classify this change and run its tier with $vdev"
+    ],
+    "logo": "./assets/icon.png",
+    "composerIcon": "./assets/icon.png"
   }
 }

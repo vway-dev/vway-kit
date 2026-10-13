@@ -290,8 +290,22 @@ HARNESS_COPY_FILES: dict[str, list[str]] = {
         "scripts/harness/instructions.py",
         "scripts/harness/codex/__init__.py",
         "scripts/harness/codex/instructions.py",
+        "scripts/harness/codex/hook_io.py",
     ],
 }
+# 하네스가 호스트 자신의 훅 파일에서 돌리는 파일 — VWAY_DIR 아래 플러그인 안의 경로 그대로
+# 복사함: 각 스크립트가 룰과 헬퍼를 자기 위치 기준으로 찾으므로 사본도 플러그인 배치를 따름.
+# Codex: 플러그인이 라이프사이클 훅을 싣지 않으므로(OpenAI 디렉터리가 훅 든 패키지를 거부함)
+# SessionStart·PostToolUse 훅이 이 사본을 돌림.
+HARNESS_ROOT_FILES: dict[str, list[str]] = {
+    "codex": [
+        "hooks/inject-risk-tiers.sh",
+        "hooks/invalidate-gate-markers.sh",
+        "hooks/codex/run-hook.cmd",
+    ],
+}
+# 통째로 복사하는 디렉터리(그 아래 `*.md` 전부), 같은 방식.
+HARNESS_ROOT_DIRS: dict[str, list[str]] = {"codex": ["rules"]}
 
 
 def _dest_rel(rel: str) -> Path:
@@ -492,6 +506,7 @@ def copy_artifacts(plugin: Path, host: Path, harnesses=("claude",)) -> list[str]
             report.append(f"  [!] 복사 실패({_why(exc)}): {dest_name}")
             continue
         report.append(f"  [+] 복사: {dest_name}")
+    report.extend(_copy_root_files(plugin, host, harnesses))
     # 정책 파일은 config/ 로(호스트 소유 디렉터리지만 이 파일만은 플러그인 소유·SSOT).
     tiers_src = plugin / TIERS_FILENAME
     try:
@@ -507,6 +522,64 @@ def copy_artifacts(plugin: Path, host: Path, harnesses=("claude",)) -> list[str]
         report.append(f"  [!] {TIERS_FILENAME} 복사 실패({_why(exc)}) — 수동 확인 필요")
         return report
     report.append(f"  [+] 복사: {TIERS_FILENAME} → config/")
+    return report
+
+
+def _copy_root_files(plugin: Path, host: Path, harnesses) -> list[str]:
+    """HARNESS_ROOT_FILES·HARNESS_ROOT_DIRS 를 VWAY_DIR 아래 플러그인 안의 경로로."""
+    rels = [rel for name in harnesses for rel in HARNESS_ROOT_FILES.get(name, [])]
+    report = []
+    for name in harnesses:
+        for top in HARNESS_ROOT_DIRS.get(name, []):
+            found = sorted((plugin / top).rglob("*.md")) if (plugin / top).is_dir() else []
+            if not found:
+                rels.append(top)
+                continue
+            shipped = [p.relative_to(plugin).as_posix() for p in found]
+            rels.extend(shipped)
+            report.extend(_drop_unshipped(host, top, set(shipped)))
+    for rel in rels:
+        src = plugin / rel
+        if not src.is_file():
+            report.append(f"  [!] 소스 없음, skip: {rel}")
+            continue
+        try:
+            dest = _host_target(host, host / VWAY_DIR / rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+            if dest.suffix == ".sh":
+                _make_executable(dest)
+        except OSError as exc:
+            report.append(f"  [!] 복사 실패({_why(exc)}): {rel}")
+            continue
+        report.append(f"  [+] 복사: {rel}")
+    return report
+
+
+def _drop_unshipped(host: Path, top: str, shipped: set[str]) -> list[str]:
+    """플러그인이 더 싣지 않는 룰을 호스트 사본에서 지움 — 세션 훅이 그 디렉터리를 링크된 룰의
+    자리로 지목하므로, 남은 것은 시행 중인 룰로 읽힘."""
+    base = host / VWAY_DIR
+    here = base / top
+    try:
+        # 포함 관계가 아니라 실제 경로로 봄 — 경로 어느 단에 커밋된 링크든 이 정리를 그것이
+        # 가리키는 디렉터리로 돌리고, 거기서의 삭제는 되돌릴 수 없음.
+        if Path(os.path.realpath(here)) != Path(os.path.realpath(host)) / VWAY_DIR / top:
+            return []
+        olds = sorted(here.rglob("*.md")) if here.is_dir() else []
+    except OSError:
+        return []
+    report = []
+    for old in olds:
+        rel = old.relative_to(base).as_posix()
+        if rel in shipped or old.is_symlink():
+            continue
+        try:
+            old.unlink()
+        except OSError as exc:
+            report.append(f"  [!] 삭제 실패({_why(exc)}): {rel}")
+            continue
+        report.append(f"  [-] 삭제: {rel} (플러그인에서 빠짐)")
     return report
 
 
@@ -3262,6 +3335,7 @@ def register_gates(host: Path, harnesses: list[str]) -> list[str]:
             continue
         out.append(mod.register(host))
         if name == "codex":
+            out.append(mod.register_session(host))
             out.extend(mod.trust_notes(host))
     return out
 
@@ -3280,6 +3354,8 @@ def codex_leftovers(host: Path, harnesses: list[str]) -> list[str]:
         hooks = (host / ".codex" / "hooks.json").read_text(encoding="utf-8")
         if all(word in hooks for word in harness.installer("codex").MARKER):
             left.append(".codex/hooks.json 게이트 훅")
+        if harness.installer("codex").session_hooks_remain(host):
+            left.append(".codex/hooks.json 세션 훅")
     except Exception:  # noqa: BLE001 — 안내 한 줄이지 단계를 잃을 이유가 아님
         pass
     if _codex_instructions_block(host) is True:
@@ -3378,6 +3454,19 @@ def _gate_problems(host: Path, plugin: Path, harnesses=("claude",)) -> list[str]
             " 위 [!] 를 해결한 뒤 /vdev-init 를 다시 실행하세요."
         )
     problems.extend(_claude.problems(host))
+    if "codex" in harnesses:
+        hooks_missing = [
+            Path(rel).name
+            for rel in HARNESS_ROOT_FILES["codex"]
+            if not _installed(host, plugin, f"{VWAY_DIR}/{rel}", rel)
+        ]
+        if hooks_missing:
+            problems.append(
+                "Codex 세션 훅이 실행하는 파일이 호스트에 없거나 손상됐습니다("
+                + ", ".join(hooks_missing)
+                + ") — 편집 후에도 게이트 증거가 무효화되지 않습니다."
+                " 위 [!] 를 해결한 뒤 /vdev-init 를 다시 실행하세요."
+            )
     if "codex" in harnesses:
         try:
             problems.extend(harness.installer("codex").problems(host))
@@ -3538,6 +3627,15 @@ def run_setup(host: Path, plugin: Path) -> bool:
     return True
 
 
+def _unregister_codex_session(host: Path) -> str:
+    """Codex 세션 훅 해제 한 줄 — 모듈 해석 실패의 처리는 `_unregister_codex` 와 같음."""
+    try:
+        mod = harness.installer("codex")
+    except ImportError as exc:
+        return f"  [!] Codex 게이트 설치 모듈을 불러오지 못했습니다({_why(exc)}) — 수동 확인 필요"
+    return mod.unregister_session(host)
+
+
 def _unregister_codex(host: Path) -> str:
     """Codex 게이트 해제 한 줄. 설치 모듈 해석 실패(ImportError)는 이 줄의 `[!]` 로만 — `_step`
     이 잡는 예외를 넓히면 claude 전용 호스트의 PyYAML 부재 동작까지 바뀜. 남았는지는 판정의
@@ -3630,6 +3728,8 @@ def run_uninstall(host: Path) -> bool:
     # 없으면 뗄 것도 없어 단계째 건너뜀 — claude 전용 호스트의 출력은 배선 전과 같음.
     # 설치 모듈은 단계 **안에서** 찾음 — Codex 패키징 실패가 그 한 단계만 잃게.
     if _codex_hooks_present(host):
+        # 게이트보다 먼저 — 게이트 해제가 다른 훅이 없는 파일을 지우므로.
+        finished.append(_step("[Codex 세션 훅 해제]", lambda: [_unregister_codex_session(host)]))
         finished.append(_step("[Codex 게이트 해제]", lambda: [_unregister_codex(host)]))
     finished += [
         _step(

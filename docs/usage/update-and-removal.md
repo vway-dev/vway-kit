@@ -9,6 +9,8 @@
   (비대화, 항상 먼저).
 - 빠진 config 슬롯이 있으면 보충을 제안하고, 그 외에는 무엇을 재설정할지 묻습니다.
 - 설정값·계정·웹훅·내가 고친 양식은 보존합니다.
+- Codex 호스트는 세션 훅도 여기서 다시 등록됩니다 — Codex 플러그인이 훅을 싣던 버전으로 셋업한 호스트는
+  이 재실행으로 훅을 되찾습니다.
 - 옛 `flow` 설치(`flow-config.yaml`·`.flow/`)는 `vdev-config.yaml`·`.vdev/` 로 무손실 이전합니다.
 
 ## 제거 — `/vdev-uninstall`
@@ -43,7 +45,7 @@
 
 Codex 쪽([Codex](codex.md)):
 
-- `.codex/hooks.json` 의 Codex 게이트와 루트 `AGENTS.md` 의 관리 블록을 같은 실행에서 지웁니다 —
+- `.codex/hooks.json` 의 Codex 세션 훅·게이트와 루트 `AGENTS.md` 의 관리 블록을 같은 실행에서 지웁니다 —
   `harnesses` 에 `codex` 가 남아 있든 아니든. 다른 훅과 블록 밖 내용은 남깁니다.
 - Codex 에 등록된 `recoble-*` 서버도 지우지 않고 `codex mcp remove <서버키>` 를 찍어 줍니다. global 스코프라
   다른 저장소도 쓰는 서버입니다. 신뢰한 프로젝트의 `.codex/config.toml` 에도 있는 서버는 그 파일에서 직접
@@ -69,9 +71,10 @@ Codex 쪽([Codex](codex.md)):
 - `rm -rf .claude/vway-kit/ .claude/rules/vway-kit/` — 남긴 룰 사본은 매 세션 로드되고, 방금 지운 검사기를 가리킵니다.
 - 등록 4곳 제거: `settings.json` 게이트 훅·마켓 등록, `.gitignore` 블록, `CLAUDE.md` 블록. `.gitignore` 의
   `teamer_account.md`·`.teams-webhooks.local.json` 은 그런 파일이 저장소에 남아 있는 동안 둡니다.
-- Codex 를 켰다면 `.codex/hooks.json` 에서 `command` 에 `vway-kit` 과 `harness/codex/gate` 가 함께 든
-  `PreToolUse` 훅 **하나만** 제거합니다. 그 항목의 `hooks` 목록이 비었고 항목에 `matcher`·`hooks` 뿐이면 항목도
-  지웁니다. 그 뒤 `hooks` 가 비고 다른 최상위 키가 없을 때만 파일을 지웁니다.
+- Codex 를 켰다면 `.codex/hooks.json` 에서 다음 훅**만** 제거합니다: `command` 에 `vway-kit` 과
+  `harness/codex/gate` 가 함께 든 `PreToolUse` 훅, `vway-kit/hooks/inject-risk-tiers.sh` 가 든 `SessionStart` 훅,
+  `vway-kit/hooks/invalidate-gate-markers.sh` 가 든 `PostToolUse` 훅. 항목의 `hooks` 목록이 비었고 항목에
+  `matcher`·`hooks` 뿐이면 항목도 지웁니다. 그 뒤 `hooks` 가 비고 다른 최상위 키가 없을 때만 파일을 지웁니다.
 - 루트 `AGENTS.md` 의 `<!-- vway-kit:codex-instructions BEGIN` ~ `END -->` 블록 제거
 - `.github/workflows/wiki-verify.yml` 삭제 — 지운 스크립트를 실행하므로 남기면 push 마다 CI 가 실패합니다.
 - `release.yml` 은 `semantic-release` 렌더가 아니면 지운 `release_version.py` 를 불러 릴리스 브랜치 push 마다

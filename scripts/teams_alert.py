@@ -60,7 +60,7 @@ LOCAL_FILE = CONFIG_DIR / ".teams-webhooks.local.json"
 LOCAL_CHANNELS = {"personal"}  # gitignored local 파일에 저장하는 채널
 # plugin.json userConfig 키 `teams_webhook_personal` 을 Claude Code 가 훅에 넘기는 이름.
 PERSONAL_OPTION_ENV = "CLAUDE_PLUGIN_OPTION_TEAMS_WEBHOOK_PERSONAL"
-# 호출당 초 — urlopen 의 값은 게시 전체가 아니라 소켓 대기 하나마다 걸림. hooks/hooks.json 의
+# 호출당 초 — urlopen 의 값은 게시 전체가 아니라 소켓 대기 하나마다 걸림. hooks/claude/hooks.json 의
 # Notification 훅 timeout 안에 게시가 끝나도록 맞춤(넘기면 훅이 보내기 전에 죽임).
 GIT_TIMEOUT = 2
 POST_TIMEOUT = 5

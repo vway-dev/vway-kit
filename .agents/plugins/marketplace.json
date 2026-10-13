@@ -1,0 +1,20 @@
+{
+  "name": "vway",
+  "interface": {
+    "displayName": "vway"
+  },
+  "plugins": [
+    {
+      "name": "vway-kit",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

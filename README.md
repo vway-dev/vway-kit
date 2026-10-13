@@ -77,9 +77,24 @@
 | 룰 | `risk-tiers` · `doc-style` | 위험도·티어 워크플로 / 문체 기준 — 매 세션 주입(`doc-style` 은 쓰기 시점 요약만) |
 | 룰 | `commit-discipline` | 커밋 메시지 형식·type → 버전 표 — `/commit` 이 읽음 |
 | 룰 | `promotion` · `merge-strategy` · `gate-mechanics` · `harness-rules` | 승격 절차 / 머지 전략표 / 게이트 동작 / 하네스 생성 규율 — 필요할 때 읽음 |
-| 플러그인 훅 | SessionStart · PostToolUse · Notification | 룰 주입 · 편집 시 review/doc-sync 증거 무효화 · Teams 알림 · 권한 승인 대기 시각 기록(Worklog) |
+| 플러그인 훅 | SessionStart · PostToolUse · Notification | 룰 주입 · 편집 시 review/doc-sync 증거 무효화 · Teams 알림 · 권한 승인 대기 시각 기록(Worklog) — Claude Code 전용 |
 | 호스트 훅 | PreToolUse(Bash) | 커밋·머지 게이트 — `/vdev-init` 이 호스트 `settings.json` 에 등록 |
+| 호스트 훅(Codex) | SessionStart · PostToolUse · PreToolUse(Bash) | 룰 주입 · 증거 무효화 · 커밋 게이트 — `/vdev-init` 이 `.codex/hooks.json` 에 등록 |
 | CI | GitHub Actions | `/vdev-init` 이 config 로 렌더 — [CI 워크플로](docs/usage/ci-workflows.md) |
+
+## 실행하는 것과 보내는 것
+
+- **훅은 로컬에서 돕니다.** 플러그인 안의 Bash·Python 스크립트입니다 — 세션 시작 룰 주입, 편집 뒤 게이트 증거
+  무효화, `/vdev-init` 이 등록하는 커밋 게이트. 네트워크에 닿는 훅은 Teams 알림 하나이고, 웹훅을 등록했을
+  때만입니다.
+- **외부 호출은 설정한 곳에만 갑니다.**
+  - Teams: 등록한 웹훅 URL 로 카드 게시([Teams](docs/usage/teams.md)). 개인 웹훅은 플러그인 옵션
+    `teams_webhook_personal`(보안 저장소)로 받습니다.
+  - Teamer: `teamer_api.py setup` 으로 OS keyring 에 넣은 계정으로 `https://teamer.live` 를 호출합니다
+    ([ALM](docs/usage/alm.md#teamer)).
+  - Recoble: 사람이 직접 등록한 MCP 서버를 모델이 부릅니다 — vway-kit 은 등록하지 않고 PAT 를 읽지 않습니다.
+- **생성되는 CI 워크플로**는 저장소의 GitHub Actions 에서 그 저장소의 시크릿으로 돕니다(`api.github.com` 에는
+  `GITHUB_TOKEN`, 레지스트리에는 그 레지스트리 토큰).
 
 ## 라이선스
 

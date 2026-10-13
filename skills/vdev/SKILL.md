@@ -190,6 +190,12 @@ mkdir -p .claude/vway-kit/.vdev
 echo "<tier>:$(git branch --show-current)" > .claude/vway-kit/.vdev/tier   # docs | dev
 ```
 
+**On Codex, the session hooks come first.** The Codex plugin carries no lifecycle hook;
+`/vdev-init` registers them in `.codex/hooks.json`. When that file does not name
+`vway-kit/hooks/invalidate-gate-markers.sh`, stop and have the user run `$vdev-init`:
+without that hook an edit after a review leaves the review's evidence standing, and the
+commit passes on it.
+
 ## Phase 3 — Dispatch
 
 Record each completed gate as `.claude/vway-kit/.vdev/<gate>.done`. `precommit`

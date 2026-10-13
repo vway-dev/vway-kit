@@ -1,6 +1,6 @@
 # Codex
 
-vway-kit 의 플러그인 훅과 커밋 게이트는 Claude Code 와 함께 OpenAI Codex CLI 에도 설치됩니다. 이 문서는
+vway-kit 의 스킬·세션 훅·커밋 게이트는 Claude Code 와 함께 OpenAI Codex CLI 에도 설치됩니다. 이 문서는
 Codex 호스트가 [일반 설치](getting-started.md#2-설치-순서) 외에 더 해야 하는 것과, 동작이 달라지는 곳을
 다룹니다.
 
@@ -19,11 +19,10 @@ codex plugin add vway-kit@vway
 
 ## 프로젝트 신뢰
 
-`.codex/` 아래 전부는 프로젝트 신뢰(trust)에 묶입니다 — `.codex/hooks.json` 의 커밋 게이트 포함.
-신뢰하지 않은 프로젝트는 그 디렉터리를 **경고 없이** 통째로 무시합니다.
+`.codex/` 아래 전부는 프로젝트 신뢰(trust)에 묶이고, vway-kit 의 훅은 전부 `.codex/hooks.json` 에
+있습니다. 신뢰하지 않은 프로젝트는 그 디렉터리를 **경고 없이** 통째로 무시합니다 — 세션 시작 규칙 주입도,
+증거 무효화도, 커밋 게이트도 없습니다.
 
-- 플러그인 자신의 훅은 프로젝트 신뢰 밖에서 돕니다. 그래서 신뢰하지 않은 프로젝트도 세션 시작 때 규칙은
-  주입받지만 커밋 게이트는 꺼져 있습니다 — 세션은 커밋이 게이팅된다고 읽는데 실제로는 아닙니다.
 - Codex TUI 에서 폴더를 신뢰하거나, `config.toml` 의 `[projects]` 밑에 그 경로의
   `trust_level = "trusted"` 를 적습니다.
 - `/vdev-init` 은 Codex 가 이 프로젝트를 trusted 로 모르면 그렇다고 알려 줍니다.
@@ -35,19 +34,28 @@ Codex 가 승인하지 않은 훅은 없는 것처럼 동작합니다 — 세션
 게이트가 전부 **조용히** 빠지고 아무것도 막지 않습니다. `/hooks` 를 열어 `vway-kit` 항목을 승인하세요.
 
 - 승인은 훅의 내용(명령 문자열·이벤트·matcher·플랫폼별 변형)과 파일 안 위치에 묶입니다.
-- 그래서 그 훅을 바꾼 플러그인 업데이트는 재승인이 필요합니다. 무관한 플러그인 변경은 아닙니다.
+- 그래서 그 훅을 바꾼 `/vdev-init` 재동기화는 재승인이 필요합니다. 무관한 플러그인 변경은 아닙니다.
 - `.codex/hooks.json` 의 항목을 옮기거나 순서를 바꿔도 재승인이 필요합니다 — 게이트 앞에 끼워 넣은 내 훅
   하나가 재승인 전까지 게이트를 끕니다.
 
-## `/vdev-init` 으로 커밋 게이트 켜기
+## `/vdev-init` 으로 훅과 커밋 게이트 켜기
+
+Codex 플러그인은 라이프사이클 훅을 싣지 않습니다 — OpenAI 플러그인 디렉터리가 훅이 든 패키지를 거부합니다.
+그래서 `/vdev-init` 을 돌리기 전의 Codex 세션은 스킬만 있고 세션 시작 규칙이 없습니다.
+
+- `/vdev-init` 이 호스트 `.codex/hooks.json` 에 `SessionStart`·`PostToolUse` 훅을 등록합니다. 훅이 돌리는
+  스크립트와 `rules/` 는 `.claude/vway-kit/` 아래에 사본으로 둡니다.
+- Codex 플러그인이 훅을 직접 싣던 버전으로 셋업한 호스트는 플러그인 업데이트로 그 훅을 잃습니다 —
+  `$vdev-init` 을 다시 실행하세요. `$vdev` 는 그 훅이 없으면 작업 전에 멈춥니다.
 
 - **Codex 세션에서 실행** — 묻지 않고 Codex 에도 게이트를 심습니다. Claude Code 에서 처음 설정한 호스트의
   재실행도 같습니다. Codex 에서는 스킬을 `$vdev-init` 으로 부릅니다.
 - **Claude Code 에서 실행** — 첫 실행은 `.codex/` 디렉터리가 있거나 Codex 를 언급했을 때 묻습니다. 재실행은
   재설정 메뉴에서 "Codex 게이트" 를 고를 때만 더합니다.
 
-어느 쪽이든 `vdev-config.yaml` 의 `harnesses` 에 `codex` 가 들어가고, 게이트는 호스트 `.codex/hooks.json` 에
-`Bash` `PreToolUse` 훅으로 등록됩니다 — Claude 쪽 `.claude/settings.json` 과는 별개의 등록입니다.
+어느 쪽이든 `vdev-config.yaml` 의 `harnesses` 에 `codex` 가 들어가고, 세션 훅이 그 옆에 등록되며, 게이트는
+호스트 `.codex/hooks.json` 에 `Bash` `PreToolUse` 훅으로 등록됩니다 — Claude 쪽 `.claude/settings.json` 과는
+별개의 등록입니다.
 
 **Windows 는 Git for Windows 도 필요합니다.** 게이트의 Windows wrapper 는 Git 설치 폴더의
 `bin\bash.exe` 를 찾고(PATH 의 `git` 이 속한 설치 — scoop shim 이면 scoop 의 Git, 없으면
@@ -108,7 +116,7 @@ Teamer 는 `teamer_api.py`(keyring, 터미널 CLI) 경로라 Codex 에서도 [�
 ## 제거
 
 먼저 [`/vdev-uninstall`](update-and-removal.md#제거--vdev-uninstall) 을 실행하세요. Claude 쪽 정리와 같은 실행에서
-`.codex/hooks.json` 의 Codex 게이트와 `AGENTS.md` 의 관리 블록을 지웁니다 — `harnesses` 에 `codex` 가 남아
+`.codex/hooks.json` 의 Codex 세션 훅·게이트와 `AGENTS.md` 의 관리 블록을 지웁니다 — `harnesses` 에 `codex` 가 남아
 있든 아니든. `harnesses` 에서 `codex` 만 빼면 아무것도 지워지지 않고, `/vdev-init` 이 남은 것을 보고합니다.
 
 그다음 플러그인을 headless 로 또는 TUI 에서 지웁니다:

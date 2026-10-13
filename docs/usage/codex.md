@@ -13,7 +13,7 @@ codex plugin add vway-kit@vway
 
 - 둘 다 headless 라 TUI 없이 스크립트·CI 에서도 됩니다. Codex TUI 의 `/plugins` 에서 `vway-kit` 을 설치해도
   같습니다.
-- 비공개 저장소라 [SSH 준비](getting-started.md#1-저장소-접근-준비-ssh)가 Codex 에도 똑같이 필요합니다.
+- 공개 저장소라 SSH 키 없이 HTTPS URL(`https://github.com/vway-dev/vway-kit.git`)로도 추가할 수 있습니다.
 - `marketplace add` 는 SSH Git URL 외에 HTTPS Git URL·`owner/repo[@ref]`·로컬 경로도 받습니다. 로컬 경로는
   그 저장소의 커밋된 HEAD 를 설치합니다 — 커밋하지 않은 변경은 설치본에 없습니다.
 

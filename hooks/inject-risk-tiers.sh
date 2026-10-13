@@ -18,9 +18,9 @@
 #   - 그 외(SDK)  : additionalContext (top-level)
 # heredoc 은 bash 5.3+ 에서 hang 이슈 → printf 로 출력.
 #
-# `--harness codex` 는 Codex SessionStart(hooks/codex/hooks.json)의 호출 — 같은 두 블록 앞에
-# 슬래시 이름을 `$name` 으로 읽으라는 한 줄을 얹고 `rules/harness-tools/codex.md` 를 뒤에 붙여 위
-# Claude 모양으로 냄.
+# `--harness codex` 는 Codex SessionStart(`/vdev-init` 이 호스트 `.codex/hooks.json` 에 등록)의
+# 호출 — 같은 두 블록 앞에 슬래시 이름을 `$name` 으로 읽으라는 한 줄을 얹고
+# `rules/harness-tools/codex.md` 를 뒤에 붙여 위 Claude 모양으로 냄.
 # 인자 없음 = Claude Code(모든 기존 호스트) — `--harness claude` 와 같은 출력.
 
 set -uo pipefail

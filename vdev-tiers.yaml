@@ -1,0 +1,65 @@
+# vdev 위험도 티어 정책 (불변, 플러그인 소유)
+# Risk-tiered workflow tier definitions for vway-kit plugin
+
+tiers:
+  docs:
+    description: "코드 없는 변경 (문서, 주석, 설정값만)"
+    superpowers: false
+    gates:
+      - doc-sync
+      - wiki
+      - doc-style
+
+  dev:
+    description: "코드 포함 변경 (precommit = 변경 모듈 lint/static/import_lint/test)"
+    superpowers: true
+    gates:
+      - precommit
+      - review
+      - doc-sync
+      - wiki
+      - doc-style
+
+  staging:
+    description: "QA/RC 승격 (dev → stage) — bump 결정 + 전체 모듈 보안 스캔"
+    superpowers: false
+    gates:
+      - precommit
+      - review
+      - bump
+      - security-scan
+      - wiki
+      - doc-style
+
+  release:
+    description: "프로덕션 배포 (stage → main) — 보안 도구 + 보안 리뷰, 코드 리뷰 없음"
+    superpowers: false
+    gates:
+      - precommit
+      - security-scan
+      - security
+      - wiki
+      - doc-style
+
+# 머지 전략 강제 (브랜치 flow → 필수/금지 `git merge` 플래그).
+# `source`/`target`: 값에 `/` 가 있으면 브랜치 접두사 glob, 없으면 vdev-config.branches 의
+# 키(integration | staging | production)로 해석한다. `require`/`forbid` 는 플래그 하나짜리
+# 문자열이다. `warn_unless_rebased` 는 경고만 낸다 — 차단하지 않는다.
+# 이 키를 통째로 지우면 검사가 꺼진다(게이트는 fail-open 한다).
+merge_strategy:
+  - source: "feature/*"
+    target: integration
+    require: "--squash"
+    warn_unless_rebased: true
+  - source: integration
+    target: staging
+    require: "--no-ff"
+  - source: "hotfix/*"
+    target: production
+    require: "--squash"
+  - source: staging
+    target: production
+    require: "--no-ff"
+  - source: "fix/*"
+    target: integration
+    forbid: "--no-ff"

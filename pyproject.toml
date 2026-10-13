@@ -1,0 +1,63 @@
+[project]
+name = "vway-kit"
+version = "0.1.0"
+license = "Apache-2.0"
+# 플러그인 자체 개발/테스트(ruff·pytest) 환경 floor. 호스트에 배포되는 게이트
+# 스크립트의 런타임 요구는 python 3.8+ (walrus) — 이 줄과 무관하니 혼동 말 것.
+requires-python = ">=3.12"
+dependencies = ["pyyaml>=6.0", "keyring>=24"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pre-commit>=3.5",
+    "python-semantic-release>=10,<11",
+    # GitPython 3.1.60 하나만 `Actor.name_email_regex` 없이 나왔고 PSR 이 config 로드
+    # 때 그것을 읽는다. PSR 자신의 `gitpython~=3.0` 은 그 버전을 배제하지 못하므로,
+    # 제약이 없으면 `uv lock --upgrade` 가 깨진 릴리스로 걸어 들어간다. 상한이 아니라
+    # 그 한 버전만 뺀다 — 3.1.61 이 다시 들고 있어 상한은 조용한 영구 천장이 된다.
+    "GitPython!=3.1.60",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+# 정적 분석기용 경로. pytest 는 위 pythonpath 로, 런타임은 sys.path 조작으로 이미 해결되지만
+# Pyright 는 둘 다 실행하지 않아 `import skill_sandbox`(scripts/)·`from evals import run` 을
+# 미해결로 표시한다. CI 게이트는 아니고 IDE 소음만 없앤다.
+[tool.pyright]
+extraPaths = [".", "scripts"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = [".claude-plugin/plugin.json:version", ".codex-plugin/plugin.json:version"]
+commit_message = "chore(release): {version} [skip ci]"
+tag_format = "v{version}"
+commit_parser = "conventional"
+allow_zero_version = true
+major_on_zero = false
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.branches.stage]
+match = "stage"
+prerelease = true
+prerelease_token = "rc"
+
+[tool.semantic_release.changelog]
+default_templates.changelog_file = "CHANGELOG.md"
+# 외부 소비자에게 무의미한 커밋을 CHANGELOG(및 이를 재사용하는 릴리스 본문)에서 제외한다.
+# PSR 공식 권장 세트(chore/ci/refactor/style/test/build-비deps) — release 배관
+# 커밋(chore(release): … [skip ci])이 모두 걸러져 feat/fix/perf 만 남는다.
+exclude_commit_patterns = [
+    '''chore(?:\([^)]*?\))?: .+''',
+    '''ci(?:\([^)]*?\))?: .+''',
+    '''refactor(?:\([^)]*?\))?: .+''',
+    '''style(?:\([^)]*?\))?: .+''',
+    '''test(?:\([^)]*?\))?: .+''',
+    '''build\((?!deps\): .+)''',
+    '''Initial [Cc]ommit.*''',
+]

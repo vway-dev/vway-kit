@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+teamer_account.md
+.teams-webhooks.local.json
+vdev-config.yaml
+.claude/vway-kit/.vdev/
+.superpowers/
+docs/superpowers/
+evals/codex_probe/log/
+# 채점 못 한 eval 세션의 기록(evals/runner/diagnose.py).
+evals/.runs/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+.claude/scheduled_tasks.lock

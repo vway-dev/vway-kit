@@ -1,0 +1,137 @@
+# Maven Central(Sonatype Central Portal) 발행 컴포넌트 — /vdev-init 이
+# `.github/workflows/deploy-maven-central.yml` 로 정적 복사한다. permissions 는 caller job 이 준다
+# (Central 인증은 전적으로 Sonatype user token 시크릿이며 GitHub 권한이 필요 없다 —
+#  Central Portal 은 CI 발행용 OIDC 신뢰발행을 제공하지 않는다).
+#
+# ┌ [!] auto-publish 함정 — 이 레시피에서 가장 조용한 실패 ─────────────────────────┐
+# │ Portal Publisher API 의 publishingType 기본값이 USER_MANAGED 다. 업로드·검증이     │
+# │ 성공해 CI 는 초록불인데 아티팩트는 Maven Central 에 올라가지 않고 Portal 에서       │
+# │ 사람의 클릭을 기다린다.                                                          │
+# │                                                                                │
+# │   도구                          업로드+검증만                 실제 발행           │
+# │   central-publishing-maven-…   autoPublish=false(기본)      autoPublish=true     │
+# │                                                             (pom.xml 설정 —      │
+# │                                                              워크플로가 못 바꾼다) │
+# │   com.vanniktech.maven.publish ./gradlew publishToMavenCentral                   │
+# │                                          ./gradlew publishAndReleaseToMavenCentral│
+# │   sbt-ci-release              —          sbt ci-release (sonatypeBundleRelease)  │
+# │                                                                                │
+# │ 그래서 `publish` 에 기본값을 주지 않는다. 사용자가 태스크를 의식적으로 고르게 하는  │
+# │ 것이 워크플로가 할 수 있는 유일한 방어다.                                         │
+# └────────────────────────────────────────────────────────────────────────────────┘
+#
+# 시크릿 계약 (Portal user token 1쌍 + GPG 키·패스프레이즈):
+#   MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_PASSWORD  — Portal user token (maven·sbt·gradle)
+#   MAVEN_GPG_PRIVATE_KEY  — raw ASCII-armored(여러 줄)  (maven·gradle)
+#   PGP_SECRET             — 단일행 base64               (sbt 전용)
+#   MAVEN_GPG_PASSPHRASE   — 평문                        (maven·sbt·gradle)
+# GPG 키 형식이 갈리므로(raw vs base64) 워크플로 안에서 전사하지 않는다 — 파생 값은
+# GitHub 의 시크릿 마스킹을 벗어난다.
+#
+# Gradle 은 Sonatype 공식 플러그인이 없어 `com.vanniktech.maven.publish` 규약을 표준으로
+# 삼는다. 다른 플러그인(nmcp·jreleaser)을 쓰면 Portal API 가 401 로 시끄럽게 실패한다 —
+# 그런 프로젝트는 vdev-config.deploy 의 `target: custom` 으로 보낸다.
+#
+# timeout 45: central-publishing-maven-plugin 의 waitMaxTime 은 기본값이자 최솟값이
+# 1800초(30분)다. 30 이하로 두면 플러그인 자신의 타임아웃과 경합해 진단만 나빠진다.
+# 폴링 중 kill 해도 서버측 배포는 죽지 않고 Portal 에 dangling deployment 가 남는다.
+#
+# 출처: https://central.sonatype.org/publish/publish-portal-api/
+#       https://github.com/actions/setup-java  ·  https://github.com/sbt/sbt-ci-release
+#       https://vanniktech.github.io/gradle-maven-publish-plugin/central/
+name: deploy-maven-central
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "배포할 git 태그(verbatim)"
+        required: true
+        type: string
+      version:
+        description: "actions/setup-java 에 넘길 JDK 버전"
+        required: false
+        default: "21"
+        type: string
+      build_tool:
+        description: "maven | sbt | gradle"
+        required: true
+        type: string
+      build:
+        description: "발행 전 빌드 명령. 비우면 스텝 생략"
+        required: false
+        default: ""
+        type: string
+      publish:
+        description: >-
+          발행 명령. 기본값 없음 — 업로드만(publishToMavenCentral)과 실제 발행
+          (publishAndReleaseToMavenCentral)을 의식적으로 골라야 한다.
+        required: true
+        type: string
+
+jobs:
+  maven-central:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0   # sbt-dynver 가 git 태그에서 버전을 산출한다
+
+      # maven — setup-java 가 ~/.m2/settings.xml 을 만들고 GPG 키를 러너 키체인에 임포트한다.
+      # server-username-env-var/server-password-env-var/gpg-passphrase-env-var 는 값이 아니라
+      # **환경변수 이름**이다(v6 의 이름 — 옛 이름은 폐기 예정 별칭으로만 남음).
+      - if: inputs.build_tool == 'maven'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.version }}
+          cache: maven
+          server-id: central
+          server-username-env-var: MAVEN_USERNAME
+          server-password-env-var: MAVEN_CENTRAL_TOKEN
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase-env-var: MAVEN_GPG_PASSPHRASE
+
+      # sbt — GPG 를 setup-java 로 임포트하지 않는다. sbt-pgp 가 PGP_SECRET 을 직접 읽는다.
+      - if: inputs.build_tool == 'sbt'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.version }}
+          cache: sbt
+
+      - if: inputs.build_tool == 'sbt'
+        uses: sbt/setup-sbt@v1
+
+      # gradle — ORG_GRADLE_PROJECT_* 로 프로퍼티를 주입한다. 서명 키도 in-memory 다.
+      - if: inputs.build_tool == 'gradle'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.version }}
+          cache: gradle
+
+      - if: inputs.build != ''
+        env:
+          VWAY_BUILD: ${{ inputs.build }}
+        run: eval "$VWAY_BUILD"
+
+      # 세 도구가 같은 두 시크릿(Portal token 쌍 + GPG)을 각자의 이름으로 읽는다.
+      # 자기 것이 아닌 env 는 무시하므로 상위집합을 한 번에 export 한다.
+      - name: publish
+        env:
+          VWAY_PUBLISH: ${{ inputs.publish }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          SONATYPE_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          PGP_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: eval "$VWAY_PUBLISH"

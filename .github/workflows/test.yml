@@ -1,0 +1,48 @@
+# vway-kit 자신의 테스트 게이트.
+#
+# 이 저장소는 자기한테 /vdev-init 을 적용하지 않으므로(순환 — CLAUDE.md Architecture)
+# 커밋 시점 tier 게이트가 없고, .pre-commit-config.yaml 도 위생·gitlint 만 돈다.
+# 그래서 이 워크플로가 없으면 tests/ 는 사람이 `uv run pytest` 를 기억할 때만 돈다.
+# 여기서 막지 않으면 어디서도 안 막힌다.
+#
+# github/unit-test.workflow.example.yml 과 혼동하지 말 것 — 그쪽은 /vdev-init 이
+# 소비자 저장소에 렌더링하는 템플릿이고, 이 파일은 vway-kit 자신의 CI 다.
+name: test
+
+on:
+  push:
+    branches: [dev, stage, main]
+  pull_request:
+    branches: [dev, stage, main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Sync deps
+        run: uv sync
+
+      # 게이트 본체. tests/eval_harness/ 의 eval baseline 검사도 여기 포함된다 —
+      # 그 검사는 scores.json 을 읽고 description 을 해싱할 뿐이라 모델을 부르지 않는다.
+      # eval *측정* 은 로컬 전용이다(CI 러너엔 구독 세션이 없다 — eval 설계 §8).
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Format check
+        run: uv run ruff format --check

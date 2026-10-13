@@ -1,0 +1,32 @@
+# github/wiki-verify.workflow.example.yml 의 도그푸드 — 워크플로를 렌더하는 기능은 이
+# 저장소 자신의 CI 에도 내려간다. 여기는 호스트 설치가 없어 SOURCE 스크립트를 직접 돌리고,
+# vdev-config.wiki 가 없으므로 이 실행은 wiki 없는 소비자가 의지하는 "무출력 green" 계약을
+# 그대로 태운다.
+name: wiki-verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wiki-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Verify wiki graph
+        run: uv run python scripts/wiki_graph.py --verify

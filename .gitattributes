@@ -1,0 +1,4 @@
+# 플러그인 캐시는 소비자의 core.autocrlf 로 체크아웃됨 — Linux bash 는 CRLF 스크립트를 거부함.
+# 변환 대신 blob 이 줄끝을 가짐(-text): eol 변환은 git archive 출력을 트리와 어긋나게 해 마켓 검증이 거부함.
+*.sh -text
+*.cmd -text

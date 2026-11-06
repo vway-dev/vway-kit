@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "vway",
+  "description": "안전 분석 SW 및 컨설팅 전문 회사",
+  "owner": {
+    "name": "vway"
+  },
+  "plugins": [
+    {
+      "name": "vway-kit",
+      "description": "위험도 티어 워크플로 + ALM 연동(Recoble·Teamer) + Teams 알림 harness",
+      "author": {
+        "name": "vway"
+      },
+      "category": "workflow",
+      "source": "./"
+    }
+  ]
+}

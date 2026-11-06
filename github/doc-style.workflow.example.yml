@@ -1,0 +1,37 @@
+# vway-kit doc-style CI — /vdev-init 이 그대로 복사한다(치환 토큰 없음).
+# 산문 규율(rules/doc-style.md)의 layer-3 판정. layer-2 게이트는 경고만 하고 그것도 Claude
+# 세션 커밋만 보므로, 여기가 push/PR 을 실패시키는 유일한 자리다. 트리 전체를 보는 쪽이
+# 판정을 맡는 이유는 규칙을 조였을 때 커밋이 예측 없이 거부되지 않게 하기 위해서다.
+# vdev-config.doc_style.enable 이 true 일 때만 렌더한다 — 스크립트가 읽는 것과 같은
+# 플래그라, 되돌리면 이 파일을 지우지 않고도 조용해진다. 다른 경우 — .claude/ 를
+# gitignore 한 저장소라 체크아웃에 스크립트가 아예 없는 경우 — 는 아래 가드가 덮는다.
+name: doc-style
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  doc-style:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python3 -m pip install "pyyaml==6.0.3"
+
+      - name: Lint prose
+        run: |
+          if [ ! -f .claude/vway-kit/scripts/doc_style_check.py ]; then
+            echo "체크아웃에 doc_style_check.py 없음 - 검사할 것 없음"
+            exit 0
+          fi
+          python3 .claude/vway-kit/scripts/doc_style_check.py --lint-config

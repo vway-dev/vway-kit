@@ -1,0 +1,40 @@
+# vway-kit 계약 테스트 — /vdev-init 이 vdev-config.contract_test 로 렌더링한 산출물.
+# 직접 수정해도 /vdev-init 재실행은 덮어쓰지 않고 "수동 확인"으로 보고만 한다.
+# 트리거 브랜치는 contract_test.branches 에서 옴(협업 브랜치만; feature/* 제외).
+name: api-contract
+
+on:
+  push:
+    branches: [__VWAY_BRANCHES__]
+  pull_request:
+    branches: [__VWAY_BRANCHES__]
+
+permissions:
+  contents: read
+  # schemathesis/action 이 커버리지 요약을 PR 코멘트로 남김.
+  pull-requests: write
+
+jobs:
+  api-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start API server (docker compose)
+        run: docker compose -f "__VWAY_COMPOSE_FILE__" up -d
+
+      - name: Wait for health
+        run: |
+          timeout __VWAY_HEALTH_TIMEOUT__ sh -c \
+            'until curl -sf "__VWAY_HEALTH_URL__"; do sleep 2; done'
+
+      - name: Contract test (schemathesis)
+        uses: __VWAY_ACTION_REF__
+        with:
+          schema: "__VWAY_SCHEMA__"
+          base-url: "__VWAY_BASE_URL__"
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f "__VWAY_COMPOSE_FILE__" down
